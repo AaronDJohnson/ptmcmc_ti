@@ -1,73 +1,19 @@
 import numpy as np
-from jax import numpy as jnp
+from scipy.interpolate import UnivariateSpline
 
-
-def find_mu(Dk):
-    return jnp.mean(Dk)
-
-
-def find_Rk(mu, Dk):
-    return jnp.array(mu - Dk)
-
-
-def find_chi_sq(Rk):
-    return jnp.sum(Rk**2)
-
-
-def find_phi(Rk):
-    return Rk[0]**2 + Rk[-1]**2
-
-
-def find_psi(Rk):
-    return jnp.sum(Rk[:-1] * Rk[1:])
-
-
-def find_Q(mu, epsilon, Dk):
-    Rk = find_Rk(mu, Dk)
-    chi_sq = find_chi_sq(Rk)
-    phi = find_phi(Rk)
-    psi = find_psi(Rk)
-    return chi_sq + epsilon**2 * (chi_sq - phi) - 2 * epsilon * psi
-
-
-def find_mu0(epsilon, Dk):
-    N = len(Dk)
-    return (-(epsilon**2*Dk[1]) - epsilon**2*Dk[-1] + np.sum(Dk) + epsilon**2*np.sum(Dk) - 
-            epsilon*np.sum(Dk[:-1] + Dk[1:]))/((-1 + epsilon)*(-2*epsilon - N + epsilon*N))
-
-
-def find_epsilon(Dk):
-    N = len(Dk)
-    epsilon = 1 / (N - 2)
-    return epsilon
-
-
-def find_sigma(Dk):
-    N = len(Dk)
-    epsilon = find_epsilon(Dk)
-    mu0 = find_mu0(epsilon, Dk)
-    Q0 = find_Q(mu0, epsilon, Dk)
-    return np.sqrt(Q0)/np.sqrt(-((-1 + epsilon**2)*(-1 + N)))
-
-
-
-def calc_evidence_ti(chain_dir, burn_pct=0.25, verbose=True):
+def find_means(chain_dir, burn_pct=0.25, verbose=True):
     """
-    Compute the ln(evidence) with thermodynamic integration.
-    
-    For error estimates, we sort of follow https://arxiv.org/pdf/1410.3835.pdf,
-    but we don't use the spline/RJMCMC approach here. So take the error estimates
-    as an order of magnitude estimate.
+    Take mean of log likelihood for several temperatures and inverse temperatures.
 
     Input:
         chain_dir (string): folder location where the chains are stored
-        burn_pct (float): percent of the start of the chain to remove
-        verbose (bool): get more info
+        burn_pct (float) [0.25]: percent of the start of the chain to remove
+        verbose (bool) [True]: get more info
 
-    Returns:
-        ln_Z (float): natural logarithm of the evidence
+    Return:
         inv_temp (array): 1 / temperature of the chains
         mean_like (array): means of the ln(likelihood)
+        stat_unc (float): uncertainty associated with the MCMC chain
     """
     files = sorted(glob.glob(chain_dir + 'chain*'))
     beta_list = []
@@ -84,16 +30,12 @@ def calc_evidence_ti(chain_dir, burn_pct=0.25, verbose=True):
         with open(fname, 'r') as f:
             chain = np.loadtxt(f, usecols=[-3])  # only get likelihood
         burn = int(burn_pct * len(chain)) # aggressive burn in
-
-        epsilon = find_epsilon(chain)  # measure of correlation
-        mean = find_mu0(epsilon, chain)
-        sigma = find_sigma(chain)  # std
-        error = sigma * np.sqrt((1 + epsilon) / (len(chain)*(1 - epsilon) + 2 * epsilon))
+        tau, mean, sigma = acor.acor(chain[burn:])
 
         beta = 1 / temp  # integration variable
         mean_list.append(mean)
         beta_list.append(beta)
-        var_list.append(error**2)
+        var_list.append(sigma**2)
     # build numpy array
     betas = np.array(beta_list)
     means = np.array(mean_list)
@@ -104,71 +46,77 @@ def calc_evidence_ti(chain_dir, burn_pct=0.25, verbose=True):
     inv_temp = data[:, 0]
     mean_like = data[:, 1]
     var = data[:, 2]
+
     dx = np.diff(inv_temp)
     dx = np.insert(dx, 0, 0)
 
     # error est. for statistical error:
-    # total = 0
-    # for i in range(1, len(inv_temp)):
-    #     total += (1 / 4 * (var[i]**2 * dx[i]**2 +
-    #               2 * var[i - 1]**2 * dx[i] * dx[i - 1] +
-    #               var[i - 1]**2 * dx[i]**2))
-
-    # error est. for statistical error:
+    # with a lot of samples we expect this to be small compared to the other sources of error
     total = 0
     for i in range(len(inv_temp)):
         total += dx[i]**2 / 4 * (var[i]**2 + var[i - 1]**2 + 2 * var[i] * var[i - 1])
 
     stat_unc = np.sqrt(total)
 
-    log_Z = np.trapz(mean_like, inv_temp)
-
-    # discretization error estimate:
-    dy = np.diff(mean_like)
-    dx = np.diff(inv_temp)
-    deriv = dy / dx
-
-    d2y = np.diff(deriv)
-    dx2 = np.diff(dx)
-    deriv2 = d2y / dx2
-    N = len(inv_temp)
-    disc_unc = max(abs(-(deriv2 * (dx[:-1])**3 * N) / (12)))
-
-    if verbose:
-        print('model:')
-        print('ln(evidence) =', log_Z)
-        print('statistical uncertainty =', stat_unc)
-        print('discretization uncertainty =', disc_unc)
-        print()
-    return log_Z, stat_unc, disc_unc, inv_temp, mean_like
+    return inv_temp, mean_like, stat_unc
 
 
-def bayes_factor_ti(model1_dir, model2_dir, burn_pct=0.25, verbose=True):
+def calc_evidence_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
     """
-    Compute Bayes factor for two different models using thermodynamic integration.
-
-    30-60 chains minimum are recommended with Tmax >= 1e5 to 1e7. Don't forget to
-    set writeHotChains=True.
+    Compute ln(evidence) of chains of several different temperatures.
 
     Input:
-        model1_dir (string): directory path to folder containing chains for model 1
-        model2_dir (string): directory path to folder containing chains for model 2
-        burn_pct (float): percent of the start of the chain to remove
-        verbose (bool): get more info
+        model_dir1 (string): folder location where the chains are stored for first model
+        model_dir2 (string): folder location where the chains are stored for second model
+        burn_pct (float) [0.25]: percent of the start of the chain to remove
+        verbose (bool) [True]: get more info
 
-    Returns:
-        ln_bayes (float): natural log of the bayes factor
-        stat_unc (float): statistical uncertainty
-        disc_unc (float): discretization uncertainty
+    Return:
+        ln_Z (float): natural logarithm of the evidence
+        spline_up (float): max(spline - data) -- absolute error between spline and data
+        spline_dn (float): min(spline - data) -- absolute error between spline and data
+        stat_unc (float): uncertainty associated with the MCMC chain
+        disc_unc (float): uncertainty associated with discretization of the integral
     """
-    ln_ev_1, s_unc1, disc_unc1, temps1, means1 = calc_evidence_ti(model1_dir, burn_pct=burn_pct, verbose=True)
-    ln_ev_2a, s_unc2, disc_unc2, temps2, means2 = calc_evidence_ti(model2_dir, burn_pct=burn_pct, verbose=True)
+    inv_temp1, mean_like1, stat_unc1 = find_means(model_dir1, burn_pct=burn_pct, verbose=verbose)
+    print()
+    inv_temp2, mean_like2, stat_unc2 = find_means(model_dir2, burn_pct=burn_pct, verbose=verbose)
 
-    ln_bayes = ln_ev_2a - ln_ev_1
-    stat_unc = np.sqrt(s_unc1**2 + s_unc2**2)
-    disc_unc = np.sqrt(disc_unc1**2 + disc_unc2**2)
+    if not np.array_equal(inv_temp1, inv_temp2):
+        print('Temperatures are mismatched somewhere!')
+    else:
+        inv_temp = inv_temp1
+    
+    mean_diff = mean_like2 - mean_like1  # difference between models
+    # combine statistical uncertainties:
+    stat_unc = np.sqrt(stat_unc1**2 + stat_unc2**2)
+
+    # use splines to get discretization error:
+    y_spl = UnivariateSpline(inv_temp, inv_temp * mean_diff)
+    y_spl_2d = y_spl.derivative(n=2)
+
+    # error in cubic spline:
+    err_func = y_spl(inv_temp) - inv_temp * mean_diff
+    spline_up = abs(max(err_func))
+    spline_dn = abs(min(err_func))
+    # print('err_up =', spline_up)
+    # print('err_dn =', spline_dn)
+    
+    x_new = np.linspace(inv_temp[0], 1, num=10000)
+    ln_Z = np.trapz(y_spl(x_new), np.log(x_new))
+
+    # discretization error estimate:
+    N = len(x_new)
+    a = x[0]
+    b = 1
+    disc_unc = max(abs(-(b - a) / (12 * N**2) * y_spl_2d(x_new)))
 
     if verbose:
-        print('ln(BF) =', ln_bayes, '+/-', stat_unc, '+/-', disc_unc)
-
-    return ln_bayes, stat_unc, disc_unc
+        print()
+        print('model:')
+        print('ln(evidence) =', ln_Z)
+        print('statistical uncertainty =', stat_unc)
+        print('spline uncertainty = +', spline_up, '/-', spline_dn)
+        print('discretization uncertainty =', disc_unc)
+        print()
+    return ln_Z, spline_up, spline_dn, stat_unc, disc_unc
