@@ -65,7 +65,7 @@ def find_means(chain_dir, burn_pct=0.25, verbose=True):
     return inv_temp, mean_like, stat_unc
 
 
-def calc_evidence_ti(model_dir, burn_pct=0.25, verbose=True):
+def calc_log_evidence_ti(model_dir, burn_pct=0.25, verbose=True):
     """
     Compute ln(evidence) of chains of several different temperatures.
 
@@ -113,7 +113,7 @@ def calc_evidence_ti(model_dir, burn_pct=0.25, verbose=True):
     return ln_Z, spline_up, spline_dn, stat_unc, disc_unc
 
 
-def calc_bf_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
+def calc_log_bf_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
     """
     Compute ln(evidence) of chains of several different temperatures.
 
