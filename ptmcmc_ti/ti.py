@@ -1,6 +1,10 @@
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 
+import glob
+import acor.acor
+
+
 def find_means(chain_dir, burn_pct=0.25, verbose=True):
     """
     Take mean of log likelihood for several temperatures and inverse temperatures.
@@ -61,7 +65,55 @@ def find_means(chain_dir, burn_pct=0.25, verbose=True):
     return inv_temp, mean_like, stat_unc
 
 
-def calc_evidence_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
+def calc_evidence_ti(model_dir, burn_pct=0.25, verbose=True):
+    """
+    Compute ln(evidence) of chains of several different temperatures.
+
+    Input:
+        model_dir1 (string): folder location where the chains are stored for first model
+        model_dir2 (string): folder location where the chains are stored for second model
+        burn_pct (float) [0.25]: percent of the start of the chain to remove
+        verbose (bool) [True]: get more info
+
+    Return:
+        ln_Z (float): natural logarithm of the evidence
+        spline_up (float): max(spline - data) -- absolute error between spline and data
+        spline_dn (float): min(spline - data) -- absolute error between spline and data
+        stat_unc (float): uncertainty associated with the MCMC chain
+        disc_unc (float): uncertainty associated with discretization of the integral
+    """
+    inv_temp, mean_like, stat_unc = find_means(model_dir, burn_pct=burn_pct, verbose=verbose)
+
+    # use splines to get discretization error:
+    y_spl = UnivariateSpline(inv_temp, inv_temp * mean_like)
+    y_spl_2d = y_spl.derivative(n=2)
+
+    # max error in cubic spline:
+    err_func = y_spl(inv_temp) - inv_temp * mean_like
+    spline_up = abs(max(err_func))
+    spline_dn = abs(min(err_func))
+    
+    x_new = np.linspace(inv_temp[0], 1, num=10000)
+    ln_Z = np.trapz(y_spl(x_new), np.log(x_new))
+
+    # discretization error estimate:
+    N = len(x_new)
+    a = x_new[0]
+    b = 1
+    disc_unc = max(abs(-(b - a) / (12 * N**2) * y_spl_2d(x_new)))
+
+    if verbose:
+        print()
+        print('model:')
+        print('ln(evidence) =', ln_Z)
+        print('statistical uncertainty =', stat_unc)
+        print('spline uncertainty = +', spline_up, '/-', spline_dn)
+        print('discretization uncertainty =', disc_unc)
+        print()
+    return ln_Z, spline_up, spline_dn, stat_unc, disc_unc
+
+
+def calc_bf_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
     """
     Compute ln(evidence) of chains of several different temperatures.
 
@@ -79,7 +131,6 @@ def calc_evidence_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
         disc_unc (float): uncertainty associated with discretization of the integral
     """
     inv_temp1, mean_like1, stat_unc1 = find_means(model_dir1, burn_pct=burn_pct, verbose=verbose)
-    print()
     inv_temp2, mean_like2, stat_unc2 = find_means(model_dir2, burn_pct=burn_pct, verbose=verbose)
 
     if not np.array_equal(inv_temp1, inv_temp2):
@@ -107,7 +158,7 @@ def calc_evidence_ti(model_dir1, model_dir2, burn_pct=0.25, verbose=True):
 
     # discretization error estimate:
     N = len(x_new)
-    a = x[0]
+    a = x_new[0]
     b = 1
     disc_unc = max(abs(-(b - a) / (12 * N**2) * y_spl_2d(x_new)))
 
