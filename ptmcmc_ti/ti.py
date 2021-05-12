@@ -28,6 +28,8 @@ def find_means(chain_dir, burn_pct=0.25, verbose=True):
         temp = fname.split('/')[-1].split('_')[-1].split('.')[:-1]
         separator = '.'
         temp = separator.join(temp)
+        if temp == 'hot':
+            temp = 1e80
         temp = float(temp)
         if verbose:
             print('Working on temperature', temp)
